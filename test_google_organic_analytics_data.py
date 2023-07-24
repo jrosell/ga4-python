@@ -1,6 +1,5 @@
 import unittest
 from google_organic_analytics_data import main, get_date_days_ago, fetch_csv_data_from, fetch_mysql_data_from, get_dotenv
-from dotenv import load_dotenv
 
 class TestGoogleOrganicAnalyticsData(unittest.TestCase):
     def test_fetch_csv_data_from_yesterday(self):
