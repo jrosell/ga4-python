@@ -6,7 +6,7 @@ Example scripts to extract GA4 data.
 
 You can either install the required packages in your environment:
 ```
-pip install google-analytics-data mysql-connector-python pandas python-dotenv
+pip install google-analytics-data mysql-connector-python pandas python-dotenv sqlalchemy
 ```
 
 Or use a new environment in the current folder:

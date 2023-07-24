@@ -6,12 +6,14 @@ from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, Fil
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import mysql.connector
+from sqlalchemy import create_engine
+
 
 def main():
     config = get_dotenv()
     results = get_google_organic_analytics_data(
         config,
-        get_date_days_ago(config.last_days),
+        get_date_days_ago(config["last_days"]),
         get_date_days_ago(1)
     )
     save_google_organic_analytics_data(config, results)
@@ -26,7 +28,7 @@ def get_dotenv():
         'host': os.getenv('DB_HOST'),
         'user': os.getenv('DB_USER'),
         'password': os.getenv('DB_PASSWORD'),
-        'database': os.getenv('DB_DATABASE'),
+        'database': os.getenv('DB_DATABASE')
     }
 
 def get_google_organic_analytics_data(config, start_date, end_date):
@@ -87,9 +89,12 @@ def save_google_organic_analytics_data(config, data):
     timestamp = datetime.now().strftime("%Y-%m-%d")
     filename = f"data/{timestamp}_google_organic_analytics_data.csv"
     df.to_csv(filename, index=False)
-    upsert_csv_to_mysql(config, filename, "google_organic_analytics_data")
+    engine = create_mysql_connection(config)
+    df.to_sql('google_organic_analytics_data', con=engine, if_exists='replace', index=False)
+    engine.dispose()
 
 def get_date_days_ago(days_ago):
+    days_ago = int(days_ago)
     today = datetime.today()
     target_date = today - timedelta(days=days_ago)
     return target_date.strftime('%Y-%m-%d')
@@ -99,21 +104,12 @@ def convert_ga_date_to_yyyy_mm_dd(date_str):
     return date_obj.strftime('%Y-%m-%d')
 
 
-
 def upsert_csv_to_mysql(config, csv_file, table_name):
-    host = config.host;
-    user = config.user;
-    password = config.password;
-    database = config.database;
+    connection, cursor = create_mysql_connection(config)
     df = pd.read_csv(csv_file)
-    data = df.to_dict('records')
-    connection = mysql.connector.connect(
-        host=host,
-        user=user,
-        password=password,
-        database=database
-    )
-    cursor = connection.cursor()
+    df = clean_column_names(df)
+    data = df.to_dict('records')    
+    create_table_if_not_exist(cursor, table_name, df)
     insert_query = f"INSERT INTO {table_name} ({', '.join(df.columns)}) VALUES ({', '.join(['%s'] * len(df.columns))}) "
     update_query = f"ON DUPLICATE KEY UPDATE {', '.join([f'{col} = VALUES({col})' for col in df.columns])}"
     for row in data:
@@ -122,6 +118,66 @@ def upsert_csv_to_mysql(config, csv_file, table_name):
         cursor.execute(query, values)
     connection.commit()
     connection.close()
+
+def create_table_if_not_exist(cursor, table_name, df):
+    try:
+        cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+    except mysql.connector.Error as err:
+        if err.errno == mysql.connector.errorcode.ER_NO_SUCH_TABLE:
+            create_table_query = create_table_sql(df, table_name)
+            cursor.execute(create_table_query)
+        else:
+            raise err
+        
+def create_table_sql(df, table_name):
+    type_mapping = {
+            'int64': 'INT',
+            'float64': 'FLOAT',
+            'object': 'VARCHAR(255)',
+            'datetime64[ns]': 'DATETIME',
+            'bool': 'BOOL',
+        }
+    columns = ', '.join([f'{col} {type_mapping[str(df.dtypes[col])]}' for col in df.columns])
+    primary_key = ', '.join(df.columns)
+    create_table_query = f"""
+        CREATE TABLE {table_name} (
+            {columns},
+            PRIMARY KEY ({primary_key})
+        )
+    """
+    return create_table_query
+
+def clean_column_names(df):    
+    df.columns = df.columns.str.replace(' ', '_')
+    df.columns = df.columns.str.replace(r'\W', '')
+    return df
+
+def fetch_mysql_data_from(config, start_date, end_date):
+    engine = create_mysql_connection(config)
+    query = f"SELECT * FROM google_organic_analytics_data WHERE date BETWEEN '{start_date}' AND '{end_date}'"
+    df = pd.read_sql_query(query, engine)
+    engine.dispose()
+    return df
+
+def fetch_csv_data_from(start_date, end_date):
+    today_date = datetime.today().strftime('%Y-%m-%d')
+    csv_file = f"data/{today_date}_google_organic_analytics_data.csv"
+    df = pd.read_csv(csv_file)
+    df['date'] = pd.to_datetime(df['date'])
+    start_date = datetime.strptime(start_date, '%Y-%m-%d')
+    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    df_filtered = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+    return df_filtered
+
+
+
+def create_mysql_connection(config):
+    host = config['host']
+    user = config['user']
+    password = config['password']
+    database = config['database']    
+    engine = create_engine(f"mysql+mysqlconnector://{user}:{password}@{host}/{database}")
+    return engine
 
 if __name__ == "__main__":
     main()
